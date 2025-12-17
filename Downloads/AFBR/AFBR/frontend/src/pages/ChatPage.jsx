@@ -1,128 +1,126 @@
-// frontend/src/pages/ChatPage.jsx
-import React, { useEffect, useState, useCallback } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
-import ChatBubble from '../components/ChatBubble.jsx';
-import TypingIndicator from '../components/TypingIndicator.jsx';
-import ProductCard from '../components/ProductCard.jsx';
-import PaymentForm from '../components/PaymentForm.jsx';
-import {
-  addMessage,
-  setSessionId,
-  setTyping
-} from '../store/chatSlice.js';
-import { setUser } from '../store/userSlice.js';
-import {
-  sendChatMessage,
-  listProducts,
-  createOrder,
-  registerUser
-} from '../services/apiService.js';
-import {
-  initSocket,
-  joinChatRoom,
-  onChatMessage,
-  offChatMessage
-} from '../services/socketService.js';
+// src/pages/ChatPage.jsx
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { FiSend, FiArrowDown, FiUser, FiShoppingBag, FiMapPin, FiClock } from 'react-icons/fi';
+import toast from 'react-hot-toast';
+import socketService from '../services/socketService';
+import './ChatPage.css';
 
 const ChatPage = () => {
-  const dispatch = useDispatch();
-  const { sessionId, messages, isTyping, channel } = useSelector((s) => s.chat);
-  const user = useSelector((s) => s.user);
-
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [products, setProducts] = useState([]);
-  const [demoCart, setDemoCart] = useState([]);
-  const [latestOrder, setLatestOrder] = useState(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [userData, setUserData] = useState({
+    name: 'Priya Sharma',
+    loyaltyTier: 'Gold',
+    loyaltyPoints: 2450
+  });
+  
+  const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
 
+  // Welcome message
   useEffect(() => {
-    const socket = initSocket();
-
-    const handler = (msg) => {
-      if (!msg || !msg.content) return;
-      dispatch(
-        addMessage({
-          id: `${Date.now()}-${Math.random()}`,
-          role: msg.role || 'assistant',
-          content: msg.content,
-          intent: msg.intent,
-          timestamp: new Date().toISOString()
-        })
-      );
-      dispatch(setTyping(false));
+    const welcomeMessage = {
+      id: 'welcome',
+      role: 'assistant',
+      content: `Hi ${userData.name}! 👋 I'm your AI shopping assistant. I can help you find the perfect outfits, check inventory at nearby stores, and complete your purchase seamlessly. What would you like to explore today?`,
+      timestamp: new Date().toISOString(),
+      type: 'text'
     };
+    setMessages([welcomeMessage]);
+  }, [userData.name]);
 
-    onChatMessage(handler);
+  // Socket connection
+  useEffect(() => {
+    const userId = `user_${Date.now()}`;
+    const socket = socketService.connect(userId);
+
+    socketService.on('message', (data) => {
+      setIsTyping(false);
+      const newMessage = {
+        id: `msg_${Date.now()}`,
+        role: 'assistant',
+        content: data.content || data.message,
+        timestamp: new Date().toISOString(),
+        type: data.type || 'text',
+        products: data.products || null
+      };
+      setMessages(prev => [...prev, newMessage]);
+    });
+
+    socketService.on('session_created', (data) => {
+      setSessionId(data.sessionId);
+      console.log('Session created:', data.sessionId);
+    });
+
+    socketService.on('typing', () => {
+      setIsTyping(true);
+    });
 
     return () => {
-      offChatMessage(handler);
+      socketService.removeAllListeners('message');
+      socketService.removeAllListeners('session_created');
+      socketService.removeAllListeners('typing');
     };
-  }, [dispatch]);
+  }, []);
+
+  // Auto scroll to bottom
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   useEffect(() => {
-    const bootstrap = async () => {
-      try {
-        const demoName = 'Priya (Demo)';
-        const demoEmail = `demo-${Date.now()}@example.com`;
-        const res = await registerUser({ name: demoName, email: demoEmail });
-        const u = res.data;
+    scrollToBottom();
+  }, [messages]);
 
-        dispatch(
-          setUser({
-            id: u.id,
-            name: u.name,
-            email: u.email,
-            loyaltyTier: u.loyaltyTier,
-            loyaltyPoints: u.loyaltyPoints
-          })
-        );
+  // Handle scroll for "scroll to bottom" button
+  const handleScroll = () => {
+    if (chatContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+      setShowScrollButton(scrollHeight - scrollTop - clientHeight > 100);
+    }
+  };
 
-        const prodRes = await listProducts({});
-        setProducts(prodRes.data || []);
-      } catch (e) {
-        console.error('Bootstrap error', e);
-      }
-    };
-
-    bootstrap();
-  }, [dispatch]);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    joinChatRoom(sessionId);
-  }, [sessionId]);
-
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(() => {
     if (!input.trim()) return;
 
-    const now = new Date().toISOString();
-    const userMsg = {
-      id: `${now}-user`,
+    // Add user message
+    const userMessage = {
+      id: `msg_${Date.now()}`,
       role: 'user',
       content: input,
-      timestamp: now
+      timestamp: new Date().toISOString(),
+      type: 'text'
     };
-    dispatch(addMessage(userMsg));
-    dispatch(setTyping(true));
+    setMessages(prev => [...prev, userMessage]);
 
-    try {
-      const res = await sendChatMessage({
+    // Send via socket or API
+    if (socketService.isConnected()) {
+      socketService.emit('chat_message', {
         message: input,
         sessionId,
-        userId: user.id,
-        channel
+        userId: userData.name
       });
-
-      const data = res.data;
-      if (data.sessionId && data.sessionId !== sessionId) {
-        dispatch(setSessionId(data.sessionId));
-      }
-    } catch (e) {
-      console.error('Chat send error', e);
-      dispatch(setTyping(false));
+      setIsTyping(true);
+    } else {
+      // Fallback: mock response for demo
+      setTimeout(() => {
+        const mockResponse = {
+          id: `msg_${Date.now()}`,
+          role: 'assistant',
+          content: `I found some great options for you! Here are the top formal shirts under ₹2000...`,
+          timestamp: new Date().toISOString(),
+          type: 'text'
+        };
+        setMessages(prev => [...prev, mockResponse]);
+      }, 1500);
     }
 
     setInput('');
-  }, [input, sessionId, user.id, channel, dispatch]);
+  }, [input, sessionId, userData.name]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -131,167 +129,229 @@ const ChatPage = () => {
     }
   };
 
-  const handleAddToCart = (product) => {
-    setDemoCart((prev) => {
-      const existing = prev.find((p) => p.sku === product.sku);
-      if (existing) {
-        return prev.map((p) =>
-          p.sku === product.sku ? { ...p, quantity: p.quantity + 1 } : p
-        );
-      }
-      return [...prev, { ...product, quantity: 1 }];
-    });
+  const quickActions = [
+    { icon: '👔', text: 'Show formal shirts', query: 'Show me formal shirts under ₹2000' },
+    { icon: '👖', text: 'Trending jeans', query: 'What jeans are trending this season?' },
+    { icon: '📍', text: 'Check store inventory', query: 'Check inventory at nearby store' },
+    { icon: '🎁', text: 'My rewards', query: 'Show my loyalty rewards and offers' }
+  ];
+
+  const handleQuickAction = (query) => {
+    setInput(query);
+    setTimeout(() => handleSend(), 100);
   };
-
-  const handlePay = async ({ method }) => {
-    if (!demoCart.length) return;
-
-    try {
-      const payload = {
-        userId: user.id,
-        fulfillmentType: 'pickup',
-        items: demoCart.map((item) => ({
-          sku: item.sku,
-          quantity: item.quantity
-        }))
-      };
-
-      const orderRes = await createOrder(payload);
-      setLatestOrder(orderRes.data);
-
-      const paymentMessage = `I want to pay for my order by ${method}`;
-      await handleSendPaymentIntent(paymentMessage);
-    } catch (e) {
-      console.error('Payment flow error', e);
-    }
-  };
-
-  const handleSendPaymentIntent = async (messageText) => {
-    const now = new Date().toISOString();
-    dispatch(
-      addMessage({
-        id: `${now}-user-payment`,
-        role: 'user',
-        content: messageText,
-        timestamp: now
-      })
-    );
-    dispatch(setTyping(true));
-
-    try {
-      const res = await sendChatMessage({
-        message: messageText,
-        sessionId,
-        userId: user.id,
-        channel
-      });
-      const data = res.data;
-      if (data.sessionId && data.sessionId !== sessionId) {
-        dispatch(setSessionId(data.sessionId));
-      }
-    } catch (e) {
-      console.error('Payment intent error', e);
-      dispatch(setTyping(false));
-    }
-  };
-
-  const cartTotal = demoCart.reduce(
-    (sum, item) => sum + (item.final_price || item.price) * item.quantity,
-    0
-  );
 
   return (
-    <div className="page chat-page">
-      <div className="chat-layout">
-        <section className="card chat-panel">
-          <div className="section-title">
-            Omnichannel Sales Assistant
-            <span className="tag">Web</span>
-          </div>
-
-          <div className="chat-messages">
-            {messages.map((m) => (
-              <ChatBubble
-                key={m.id}
-                role={m.role}
-                content={m.content}
-                timestamp={m.timestamp}
-              />
-            ))}
-            {isTyping && (
-              <div className="chat-bubble-row left">
-                <TypingIndicator />
+    <div className="chat-page">
+      <div className="chat-container">
+        {/* Chat Header */}
+        <motion.div 
+          className="chat-header glass"
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <div className="header-info">
+            <div className="user-avatar">
+              <FiUser size={20} />
+            </div>
+            <div>
+              <h3>{userData.name}</h3>
+              <div className="status-row">
+                <span className="badge badge-success">
+                  {userData.loyaltyTier} Member
+                </span>
+                <span className="points">{userData.loyaltyPoints} pts</span>
               </div>
-            )}
-          </div>
-
-          <div className="chat-input-bar">
-            <input
-              type="text"
-              placeholder="Ask for formal shirts under ₹2000 for office..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-            <button className="btn-primary" onClick={handleSend}>
-              Send
-            </button>
-          </div>
-        </section>
-
-        <section className="card">
-          <div className="section-title">
-            Products & Cart
-            <span className="tag subtle">
-              {user.loyaltyTier} • {user.loyaltyPoints} pts
-            </span>
-          </div>
-          <div className="sidebar-section">
-            <div className="sidebar-subtitle">Featured products</div>
-            <div className="sidebar-list">
-              {products.map((p) => (
-                <ProductCard
-                  key={p.sku}
-                  product={p}
-                  onAddToCart={handleAddToCart}
-                />
-              ))}
             </div>
           </div>
-
-          <div className="sidebar-section">
-            <div className="sidebar-subtitle">
-              Demo cart ({demoCart.length} items)
-            </div>
-            <div className="sidebar-list cart-list">
-              {demoCart.map((item) => (
-                <div key={item.sku} className="cart-row">
-                  <span>{item.name}</span>
-                  <span>
-                    x{item.quantity} • ₹ {item.final_price || item.price}
-                  </span>
-                </div>
-              ))}
-              {!demoCart.length && (
-                <div className="empty">Add products to cart to demo payment.</div>
-              )}
-            </div>
-          </div>
-
-          <PaymentForm total={cartTotal} onPay={handlePay} />
-
-          {latestOrder && (
-            <div className="card" style={{ marginTop: '0.75rem' }}>
-              <div className="sidebar-subtitle">Last order</div>
-              <div className="order-summary">
-                <div>ID: {latestOrder.order_id}</div>
-                <div>Total: ₹ {latestOrder.final_total}</div>
-              </div>
+          {sessionId && (
+            <div className="session-info">
+              <span className="session-id">Session: {sessionId.slice(-8)}</span>
             </div>
           )}
-        </section>
+        </motion.div>
+
+        {/* Messages Area */}
+        <div 
+          className="messages-container"
+          ref={chatContainerRef}
+          onScroll={handleScroll}
+        >
+          <AnimatePresence>
+            {messages.map((message, index) => (
+              <MessageBubble key={message.id} message={message} index={index} />
+            ))}
+          </AnimatePresence>
+
+          {isTyping && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="typing-indicator"
+            >
+              <div className="typing-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <span className="typing-text">AI is thinking...</span>
+            </motion.div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Quick Actions (shown when no messages) */}
+        {messages.length <= 1 && (
+          <motion.div 
+            className="quick-actions"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.5 }}
+          >
+            <p className="quick-actions-title">Quick actions to get started:</p>
+            <div className="quick-actions-grid">
+              {quickActions.map((action, index) => (
+                <motion.button
+                  key={index}
+                  className="quick-action-btn glass"
+                  onClick={() => handleQuickAction(action.query)}
+                  whileHover={{ scale: 1.05, y: -2 }}
+                  whileTap={{ scale: 0.95 }}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.6 + index * 0.1 }}
+                >
+                  <span className="action-icon">{action.icon}</span>
+                  <span className="action-text">{action.text}</span>
+                </motion.button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Scroll to Bottom Button */}
+        <AnimatePresence>
+          {showScrollButton && (
+            <motion.button
+              className="scroll-to-bottom btn-primary"
+              onClick={scrollToBottom}
+              initial={{ opacity: 0, scale: 0 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0 }}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+            >
+              <FiArrowDown size={20} />
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        {/* Input Area */}
+        <motion.div 
+          className="chat-input-container glass"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <input
+            type="text"
+            className="chat-input"
+            placeholder="Ask for formal shirts under ₹2000 for office..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          <motion.button
+            className="send-btn btn-primary"
+            onClick={handleSend}
+            disabled={!input.trim()}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            <FiSend size={20} />
+          </motion.button>
+        </motion.div>
       </div>
     </div>
+  );
+};
+
+// Message Bubble Component
+const MessageBubble = ({ message, index }) => {
+  const isUser = message.role === 'user';
+
+  return (
+    <motion.div
+      className={`message-bubble ${isUser ? 'user' : 'assistant'}`}
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ delay: index * 0.05 }}
+    >
+      <div className="bubble-content">
+        {!isUser && (
+          <div className="assistant-avatar">
+            <span className="gradient-text">AI</span>
+          </div>
+        )}
+        <div className={`bubble-text ${isUser ? 'glass' : ''}`}>
+          <p>{message.content}</p>
+          {message.products && (
+            <div className="products-grid">
+              {message.products.map((product, idx) => (
+                <ProductCard key={idx} product={product} />
+              ))}
+            </div>
+          )}
+          <span className="timestamp">
+            {new Date(message.timestamp).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit'
+            })}
+          </span>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+// Product Card Component
+const ProductCard = ({ product }) => {
+  return (
+    <motion.div
+      className="product-card glass"
+      whileHover={{ scale: 1.02, y: -4 }}
+      transition={{ duration: 0.2 }}
+    >
+      <div className="product-image">
+        <img 
+          src={product.image || 'https://via.placeholder.com/200'} 
+          alt={product.name}
+          loading="lazy"
+        />
+        {product.discount && (
+          <span className="discount-badge">{product.discount}% OFF</span>
+        )}
+      </div>
+      <div className="product-info">
+        <h4>{product.name}</h4>
+        <div className="price-row">
+          {product.originalPrice && (
+            <span className="original-price">₹{product.originalPrice}</span>
+          )}
+          <span className="final-price">₹{product.price}</span>
+        </div>
+        <div className="product-meta">
+          <span className="badge badge-success">
+            <FiMapPin size={12} /> Store-007
+          </span>
+        </div>
+        <div className="product-actions">
+          <button className="btn-secondary">Reserve</button>
+          <button className="btn-primary">Add to Cart</button>
+        </div>
+      </div>
+    </motion.div>
   );
 };
 
